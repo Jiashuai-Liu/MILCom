@@ -1,0 +1,37 @@
+# configs of task
+task: 'gastric_esd_subtype'
+
+# configs of path
+data_root_dir: '/home3/gzy/Gastric_ESD/feature_resnet/'
+label_frac: 1
+
+results_dir: './results'
+exp_code: 'gastric_esd_subtyping_addmil_w'
+
+# configs of training
+seed: 1
+k: 5
+k_start: 0
+k_end: 5
+max_epochs: 200
+lr: 0.0001
+reg: 0.00001
+early_stopping: True
+drop_out: True
+drop_rate: 0.25
+opt: 'adam'
+bag_loss: 'bce'
+weighted_sample: True
+log_data:  True
+testing: False
+
+# configs of model
+model_type: 'add_mil'
+model_size: 'small' # 'big'
+fea_dim: 1024
+inst_rate: 0.1
+no_inst_cluster:  False
+inst_loss:  None
+subtyping:  True
+bag_weight:  0.7
+B:  8

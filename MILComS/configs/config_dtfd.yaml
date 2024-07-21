@@ -1,0 +1,63 @@
+# configs of task and path
+task: 'lung_subtype'
+data_root_dir: '/home3/gzy/Lung/feature_resnet'
+exp_code: 'lung_subtyping_DTFDMIL_res50_1512_5fold'
+
+# task: 'esca_subtyping'
+# data_root_dir: '/data_nas/ljs/ESCA/feature_conch/'
+# exp_code: 'esca_subtyping_DTFDMIL_conch_10x512_5fold'
+
+# task: 'gastric_staging'
+# data_root_dir: '/data_nas/ljs/Stomach/feature_conch/'
+# exp_code: 'gastric_staging_DTFDMIL_conch_10x512_5fold'
+
+# task: 'renal_subtyping'
+# data_root_dir: '/data_nas/ljs/Kidney/feature_conch/'
+# exp_code: 'renal_subtyping_DTFDMIL_conch_10x512_5fold'
+
+# task: 'lung_subtyping'
+# data_root_dir: '/data_nas/ljs/Lung/feature_conch/'
+# exp_code: 'lung_subtyping_DTFDMIL_conch_10x512_5fold'
+
+# task: 'kica_subtyping'
+# data_root_dir: '/data_nas/ljs/KICA/feature_conch/'
+# exp_code: 'kica_subtyping_DTFDMIL_conch_10x512_5fold'
+
+# task: 'kica_staging'
+# data_root_dir: '/data_nas/ljs/KICA/feature_conch/'
+# exp_code: 'kica_staging_DTFDMIL_conch_10x512_5fold'
+
+# task: 'esca_staging'
+# data_root_dir: '/data_nas/ljs/ESCA/feature_conch/'
+# exp_code: 'esca_staging_DTFDMIL_conch_10x512_5fold'
+
+label_frac: 0.8
+results_dir: './results'
+
+
+# configs of training
+seed: 1
+k: 5
+k_start: 0
+k_end: 5
+max_epochs: 200
+lr: 0.0001
+reg: 0.00001
+early_stopping: True
+drop_out: False
+drop_rate: 0.25
+opt: 'adam'
+bag_loss: 'ce'
+weighted_sample: True
+log_data:  True
+testing: False
+
+# configs of model
+model_type: 'dtfd_mil'
+model_size: 'small' # 'big'
+fea_dim: 1024
+no_inst_cluster:  False
+inst_loss:  None
+subtyping:  True
+bag_weight:  0.7
+B:  8
