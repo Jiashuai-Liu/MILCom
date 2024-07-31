@@ -9,9 +9,10 @@ import math
 from utils.file_utils import save_pkl, load_pkl
 from utils.utils import *
 from utils.core_utils import train
-# from datasets.dataset_nic import Generic_MIL_Dataset as Generic_NIC_Dataset
 from datasets.dataset_generic_npy import Generic_MIL_Dataset
 # from datasets.dataset_generic import Generic_MIL_Dataset
+from datasets.dataset_nic import Generic_MIL_Dataset as NIC_MIL_Dataset
+from datasets.dataset_nic_ovarian import Generic_MIL_Dataset_ovarian as NIC_MIL_Dataset_ovarian
 
 # pytorch imports
 import torch
@@ -103,7 +104,8 @@ parser.add_argument('--drop_out', action='store_true', default=False, help='enab
 parser.add_argument('--bag_loss', type=str, choices=['svm', 'ce', 'bce'], default='ce',
                      help='slide-level classification loss function (default: ce)')
 parser.add_argument('--model_type', type=str, choices=['clam_sb', 'clam_mb', 'add_mil',
-                                                       'ds_mil', 'trans_mil', 'dtfd_mil', 'mil'], 
+                                                       'ds_mil', 'trans_mil', 'dtfd_mil', 'mil',
+                                                       'nic', 'nicwss'], 
                     default='clam_sb', 
                     help='type of model (default: clam_sb, clam w/ single attention branch)')
 parser.add_argument('--exp_code', type=str, help='experiment code for saving results')
@@ -122,6 +124,21 @@ parser.add_argument('--subtyping', action='store_true', default=False,
 parser.add_argument('--bag_weight', type=float, default=0.7,
                     help='clam: weight coefficient for bag-level loss (default: 0.7)')
 parser.add_argument('--B', type=int, default=8, help='numbr of positive/negative patches to sample for clam')
+
+### NICWSS specific options
+parser.add_argument('--only_cam', action='store_true', default=False,
+                    help='if only cam, without PCM module')
+parser.add_argument('--inst_rate', type=float, default=0.01,
+                    help='drop_rate for drop_with_score')
+parser.add_argument('--b_rv', type=float, default=1.0, 
+                    help='parameter to balance the cam and cam_rv')
+parser.add_argument('--w_cls', type=float, default=1.0, 
+                    help='loss function weight for classification')
+parser.add_argument('--w_er', type=float, default=1.0, 
+                    help='loss function weight for Equivarinat loss')
+parser.add_argument('--w_ce', type=float, default=1.0, 
+                    help='loss function weight for conditional entropy')
+
 args = parser.parse_args()
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -140,7 +157,7 @@ args.task = cfg['task']
 args.data_root_dir=cfg['data_root_dir']
 args.max_epochs = cfg['max_epochs']
 args.results_dir = cfg['results_dir']
-args.lr = cfg['lr']
+args.lr = float(cfg['lr'])
 args.exp_code = cfg['exp_code']
 args.label_frac = cfg['label_frac']
 args.bag_loss = cfg['bag_loss']
@@ -156,6 +173,14 @@ args.inst_loss = cfg['inst_loss']
 args.subtyping = cfg['subtyping']
 args.bag_weight = cfg['bag_weight']
 args.B = cfg['B']
+
+args.only_cam = cfg['only_cam']
+args.b_rv = cfg['b_rv']
+args.w_cls = cfg['w_cls']
+args.w_er = cfg['w_er']
+args.w_ce = cfg['w_ce']
+args.inst_rate = cfg['inst_rate']
+
 
 def seed_torch(seed=7):
     import random
@@ -195,24 +220,67 @@ if args.model_type in ['clam_sb', 'clam_mb']:
     settings.update({'bag_weight': args.bag_weight,
                     'inst_loss': args.inst_loss,
                     'B': args.B})
+elif args.model_type in ['nic', 'nicwss']:
+    settings.update({'only_cam': args.only_cam,
+                     'b_rv': args.b_rv,
+                     'w_cls': args.w_cls,
+                     'w_er': args.w_er,
+                     'w_ce': args.w_ce})
+
 
 print('\nLoad Dataset')
 
 
+
+dataset_params = {
+    'csv_path' : 'dataset_csv/renal_subtyping_npy.csv',
+    'data_dir' : args.data_root_dir,
+    'data_mag' :'1_512',
+    'shuffle' : False, 
+    'seed' : 10, 
+    'print_info': True,
+    'label_dict' : {'ccrcc':0, 'prcc':1, 'chrcc':2},
+    'patient_strat': False,
+    'ignore': []
+}
+
+
 if args.task == 'renal_subtype':
     args.n_classes=3
-    dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/renal_subtyping_npy.csv',
-                                data_dir = args.data_root_dir,
-                                data_mag = '1_512',
-                                shuffle = False, 
-                                seed = 10, 
-                                print_info = True,
-                                label_dict = {'ccrcc':0, 'prcc':1, 'chrcc':2},
-                                patient_strat= False,
-                                ignore=[])
+    dataset_params['csv_path'] = 'dataset_csv/renal_subtyping_npy.csv'
+    dataset_params['label_dict'] = {'ccrcc':0, 'prcc':1, 'chrcc':2}
+    if args.model_type in ['nicwss', 'nic']:
+        dataset = NIC_MIL_Dataset(**dataset_params)
+    else:
+        dataset = Generic_MIL_Dataset(**dataset_params)
     
     if args.model_type in ['clam_sb', 'clam_mb']:
-        assert args.subtyping 
+        assert args.subtyping
+
+# ny conch feature
+elif args.task == 'kica_subtyping':
+    args.n_classes=2
+    dataset_params['csv_path'] = 'dataset_csv/kica_subtyping_npy.csv'
+    dataset_params['label_dict'] = {'chromophobe type':0, 'Papillary adenocarcinoma': 1}
+    dataset_params['data_mag'] = '10x512'
+    if args.model_type in ['nicwss', 'nic']:
+        dataset = NIC_MIL_Dataset(**dataset_params)
+    else:
+        dataset = Generic_MIL_Dataset(**dataset_params)
+
+elif args.task == 'kica_staging':
+    args.n_classes=2
+    dataset_params['csv_path'] = 'dataset_csv/kica_staging_npy.csv'
+    dataset_params['label_dict'] = {'late':0, 'early': 1}
+    dataset_params['data_mag'] = '10x512'
+    if args.model_type in ['nicwss', 'nic']:
+        dataset = NIC_MIL_Dataset(**dataset_params)
+    else:
+        dataset = Generic_MIL_Dataset(**dataset_params)
+    
+
+
+# other feature
 elif args.task == 'renal_subtype_yfy':
     args.n_classes=3
     dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/renal_subtyping_yfy_npy_old.csv',
@@ -251,6 +319,10 @@ elif args.task == 'lung_subtype':
                                 ignore=[])
 else:
     raise NotImplementedError
+
+
+
+
     
 if not os.path.isdir(args.results_dir):
     os.mkdir(args.results_dir)

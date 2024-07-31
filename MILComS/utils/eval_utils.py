@@ -9,6 +9,7 @@ from models.model_clam import CLAM_MB, CLAM_SB, ADD_MIL
 from models.model_dsmil import DS_MIL
 from models.model_transmil import TransMIL
 from models.model_dtfd import DTFD_MIL_tier1, DTFD_MIL_tier2
+from models.model_nicwss import NICWSS
 import pdb
 import os
 import pandas as pd
@@ -18,6 +19,7 @@ from sklearn.metrics import roc_auc_score, roc_curve, auc, accuracy_score, class
 from sklearn.preprocessing import label_binarize
 import matplotlib.pyplot as plt
 from sklearn.metrics import auc as calc_auc
+import utils.wsi_seam_utils as visualization
 
 
 def initiate_model(args, ckpt_path):
@@ -42,10 +44,10 @@ def initiate_model(args, ckpt_path):
             raise NotImplementedError
     elif args.model_type == 'add_mil':
         model = ADD_MIL(**model_dict)
-#         model = DefaultMILGraph(
-#         pointer=DefaultAttentionModule(hidden_activation = nn.LeakyReLU(0.2), hidden_dims=[512, 256], input_dims=1024),
-#         classifier=AdditiveClassifier(hidden_dims=[512, 256], input_dims=1024, output_dims=args.n_classes)
-#     )
+    #     model = DefaultMILGraph(
+    #     pointer=DefaultAttentionModule(hidden_activation = nn.LeakyReLU(0.2), hidden_dims=[512, 256], input_dims=1024),
+    #     classifier=AdditiveClassifier(hidden_dims=[512, 256], input_dims=1024, output_dims=args.n_classes)
+    # )
     
     elif args.model_type == 'trans_mil':
         model = TransMIL(**model_dict)
@@ -63,6 +65,8 @@ def initiate_model(args, ckpt_path):
         model_tier1 = DTFD_MIL_tier1(**model_dict)
         model_tier2 = DTFD_MIL_tier2(**model_dict)
         model = [model_tier1, model_tier2]
+    elif args.model_type in ['nic', 'nicwss']:
+        model = NICWSS(**model_dict)
     else: # args.model_type == 'mil'
         if args.n_classes > 2:
             model = MIL_fc_mc(**model_dict)
@@ -70,8 +74,8 @@ def initiate_model(args, ckpt_path):
             model = MIL_fc(**model_dict)
     
     if args.model_type == 'dtfd_mil':
-#         model_tier1.relocate()
-#         model_tier2.relocate()
+        # model_tier1.relocate()
+        # model_tier2.relocate()
         for model_temp in model:
             model_temp.relocate()
     else:
@@ -123,16 +127,16 @@ def summary(model, loader, args):
         model_tier2.eval()
     else:
         model.eval()
-#         model.cpu()
+    #     model.cpu()
         
-#     if args.model_type == 'trans_mil':
-#         # 指定量化配置，使用默认的动态量化配置
-#         model.qconfig = torch.quantization.get_default_qconfig('fbgemm')
-#         # 准备模型进行动态量化
-#         model_fp32_prepared = torch.quantization.prepare(model, inplace=False)
-#         # 对模型进行动态量化
-#         model_int8 = torch.quantization.convert(model_fp32_prepared, inplace=False)
-#         model_int8.cpu()
+    # if args.model_type == 'trans_mil':
+    #     # 指定量化配置，使用默认的动态量化配置
+    #     model.qconfig = torch.quantization.get_default_qconfig('fbgemm')
+    #     # 准备模型进行动态量化
+    #     model_fp32_prepared = torch.quantization.prepare(model, inplace=False)
+    #     # 对模型进行动态量化
+    #     model_int8 = torch.quantization.convert(model_fp32_prepared, inplace=False)
+    #     model_int8.cpu()
         
         
     test_loss = 0.
@@ -154,6 +158,12 @@ def summary(model, loader, args):
         inst_label = inst_label[0]
         
         slide_id = slide_ids.iloc[batch_idx]
+        if args.model_type in ['nic', 'nicwss']:
+            label_bn = torch.zeros(args.n_classes)
+            label_bn[label.long()] = 1
+            label_bn = label_bn.to(device)
+            label_bn = label_bn.unsqueeze(0).unsqueeze(2).unsqueeze(3)
+        
         
         with torch.no_grad():
             if args.model_type == 'dtfd_mil':
@@ -161,14 +171,32 @@ def summary(model, loader, args):
                 logits = model_tier2(slide_pseudo_feat)
                 Y_hat = torch.topk(logits, 1, dim = 1)[1]
                 Y_prob = torch.softmax(logits, dim=1)
+                score = score.T
+            elif args.model_type in ['nic', 'nicwss']:
+                cam = model(data, masked=True, train=False)
+                label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+                
+                Y_prob = label_pred_cam_or.squeeze(3).squeeze(2)
+                Y_hat = torch.argmax(Y_prob)
+                
+                cam_raw = visualization.max_norm(cam)
+                cam = visualization.max_norm(cam)  * label_bn
             else:
                 logits, Y_prob, Y_hat, score, _ = model(data)
+                score = score.T
             
 
-        score = score.T
+        
 
         if inst_label!=[]:
-            if score.shape[-1]==1:
+            if args.model_type in ['nic', 'nicwss']:                
+                mask = cors[1]
+                f_h, f_w = np.where(mask==1)
+                cam_n = cam_raw[0, label,...].squeeze(0).data.cpu().numpy()
+                inst_score = cam_n[f_h, f_w]
+                inst_pred = [1 if i>0.5 else 0 for i in inst_score]
+                
+            elif score.shape[-1]==1:
                 inst_score = score.detach().cpu().numpy()[:,0]
             elif args.task == "camelyon":
                 inst_score = score[:,1].detach().cpu().numpy()[:]
@@ -178,7 +206,8 @@ def summary(model, loader, args):
             inst_score = list((inst_score-inst_score.min())/max(inst_score.max()-inst_score.min(),1e-10))
             all_inst_label += inst_label
             all_inst_score += inst_score
-        
+
+            # import pdb; pdb.set_trace()
             if type(cors[0][0]) is np.ndarray:
                 cors = [["{}_{}_{}.png".format(str(cors[0][i][0]), str(cors[0][i][1]), args.patch_size) for i in range(len(cors[0]))]]
         
@@ -207,6 +236,7 @@ def summary(model, loader, args):
     inst_acc = accuracy_score(all_inst_label, all_inst_pred)
     print(classification_report(all_inst_label, all_inst_pred))
     
+    ### maybe change later for the auc score
     aucs = []
     if len(np.unique(all_labels)) == 1:
         auc_score = -1
@@ -236,6 +266,6 @@ def summary(model, loader, args):
     
     df_inst = pd.DataFrame([all_silde_ids, all_inst_score, all_inst_label]).T
     df_inst.columns = ['filename', 'prob', 'label']
-#     print(df_inst)
+    # print(df_inst)
     
     return patient_results, test_error, [auc_score,inst_auc,inst_acc], df, acc_logger, df_inst

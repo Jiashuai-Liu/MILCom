@@ -62,7 +62,7 @@ class Generic_WSI_Classification_Dataset(Dataset):
             label_col = 'label'
         self.label_col = label_col
 
-        slide_data = pd.read_csv(csv_path)
+        slide_data = pd.read_csv(csv_path, dtype={"case_id": str, "slide_id": str})
         slide_data = self.filter_df(slide_data, filter_dict)
         slide_data = self.df_prep(slide_data, self.label_dict, ignore, self.label_col)
 
@@ -248,7 +248,16 @@ class Generic_WSI_Classification_Dataset(Dataset):
 
         else:
             assert csv_path 
-            all_splits = pd.read_csv(csv_path, dtype=self.slide_data['slide_id'].dtype)  
+            def convert_to_int_str(x):
+                try:
+                    # 尝试转换为int，然后转换为str
+                    return str(int(float(x)))
+                except ValueError:
+                    # 如果转换失败，返回原始字符串
+                    return x
+                    
+            all_splits = pd.read_csv(csv_path, dtype='str')
+            all_splits = all_splits.applymap(convert_to_int_str)
 
             train_split = self.get_split_from_df(all_splits, 'train')
             val_split = self.get_split_from_df(all_splits, 'val')
@@ -318,14 +327,14 @@ class Generic_WSI_Classification_Dataset(Dataset):
         df.to_csv(filename, index = False)
 
  
-class Generic_MIL_Dataset(Generic_WSI_Classification_Dataset):
+class Generic_MIL_Dataset_ovarian(Generic_WSI_Classification_Dataset):
     def __init__(self,
         data_dir='',
         data_mag='',
         size=512,
         **kwargs):
         
-        super(Generic_MIL_Dataset, self).__init__(**kwargs)
+        super(Generic_MIL_Dataset_ovarian, self).__init__(**kwargs)
         
         self.data_dir = data_dir
         self.data_mag = data_mag
@@ -389,8 +398,7 @@ class Generic_MIL_Dataset(Generic_WSI_Classification_Dataset):
         slide_id = self.slide_data['slide_id'][idx]
         label = self.slide_data['label'][idx]
         data_dir = self.data_dir
-        
-        slide_id = slide_id.split('.')[0]  # for conch
+
         full_path = os.path.join(data_dir,'{}_{}.npy'.format(slide_id, self.data_mag))
         
         record = np.load(full_path, allow_pickle=True)
@@ -419,12 +427,18 @@ class Generic_MIL_Dataset(Generic_WSI_Classification_Dataset):
             inst_label_nic = list(inst_label_nic_nd[np.where(mask==1)])
         else:
             inst_label_nic = inst_label_nic_nd
+            
+        # specific for ovarian
+        inst_label_nic[inst_label_nic==0]=3 # tumor(0) -> 3
+        inst_label_nic[inst_label_nic==1]=0 # normal (1) -> 0
+        inst_label_nic[inst_label_nic==2]=0 # normal (2) -> 0
+        inst_label_nic[inst_label_nic==3]=1 # tumor(3) -> 1
 
         return features_nic, label, [coords_nic, mask], inst_label_nic
         
         
         
-class Generic_Split(Generic_MIL_Dataset):
+class Generic_Split(Generic_MIL_Dataset_ovarian):
     def __init__(self, slide_data, data_dir=None, data_mag=None, num_classes=2, size=512):
         
         self.slide_data = slide_data

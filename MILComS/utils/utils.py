@@ -35,10 +35,18 @@ class SubsetSequentialSampler(Sampler):
 def collate_MIL(batch):
     img = torch.cat([item[0] for item in batch], dim = 0)
     label = torch.LongTensor([item[1] for item in batch])
-#     return [img, label]
-    coords = [item[2] for item in batch]
+    # return [img, label]
+    coords = [item[2] for item in batch][0]
     inst_label = [item[3] for item in batch]
     return [img, label, coords, inst_label]
+
+# def collate_MIL(batch):  # for nic
+#     #img = torch.cat([item[0] for item in batch], dim = 0)
+#     img = [item[0] for item in batch][0]
+#     label = torch.LongTensor([item[1] for item in batch])
+#     coords = [item[2] for item in batch][0]
+#     inst_label = [item[3] for item in batch][0]
+#     return [img, label, coords, inst_label]
 
 def collate_features(batch):
     img = torch.cat([item[0] for item in batch], dim = 0)
