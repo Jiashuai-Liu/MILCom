@@ -1,5 +1,4 @@
-<<<<<<< HEAD
-.out
-=======
-.out
->>>>>>> e1e1c8a97e9eefa013eadf91bd5cdf5786e51d75
+*.out
+**/__pycache__/
+**/results/
+**/eval_results/
