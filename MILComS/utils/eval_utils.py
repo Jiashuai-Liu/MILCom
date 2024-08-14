@@ -66,7 +66,9 @@ def initiate_model(args, ckpt_path):
         model_tier2 = DTFD_MIL_tier2(**model_dict)
         model = [model_tier1, model_tier2]
     elif args.model_type in ['nic', 'nicwss']:
+        model_dict.update({'only_cam': args.only_cam})
         model = NICWSS(**model_dict)
+        
     else: # args.model_type == 'mil'
         if args.n_classes > 2:
             model = MIL_fc_mc(**model_dict)
@@ -173,14 +175,23 @@ def summary(model, loader, args):
                 Y_prob = torch.softmax(logits, dim=1)
                 score = score.T
             elif args.model_type in ['nic', 'nicwss']:
-                cam = model(data, masked=True, train=False)
-                label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
-                
-                Y_prob = label_pred_cam_or.squeeze(3).squeeze(2)
+                if args.only_cam:
+                    cam = model(data, masked=True, train=False)
+                    label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+                    
+                    Y_prob = label_pred_cam_or.squeeze(3).squeeze(2)
+                    cam_raw = visualization.max_norm(cam)
+                    cam = visualization.max_norm(cam)  * label_bn
+                else:
+                    cam, cam_rv = model(data, masked=True, train=False)
+                    label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+                    label_pred_cam_rv = F.adaptive_avg_pool2d(cam_rv, (1, 1))
+                    Y_prob = (label_pred_cam_or * args.b_rv + label_pred_cam_rv * (1-args.b_rv)).squeeze(3).squeeze(2)
+                    
+                    cam_raw = visualization.max_norm(cam)
+                    cam = visualization.max_norm(cam)
+                    cam_rv = visualization.max_norm(cam_rv)
                 Y_hat = torch.argmax(Y_prob)
-                
-                cam_raw = visualization.max_norm(cam)
-                cam = visualization.max_norm(cam)  * label_bn
             else:
                 logits, Y_prob, Y_hat, score, _ = model(data)
                 score = score.T
@@ -207,10 +218,9 @@ def summary(model, loader, args):
             all_inst_label += inst_label
             all_inst_score += inst_score
 
-            # import pdb; pdb.set_trace()
             if type(cors[0][0]) is np.ndarray:
                 cors = [["{}_{}_{}.png".format(str(cors[0][i][0]), str(cors[0][i][1]), args.patch_size) for i in range(len(cors[0]))]]
-        
+
             all_silde_ids += [os.path.join(slide_ids[batch_idx], cors[0][i]) for i in range(len(cors[0]))]
         
         acc_logger.log(Y_hat, label)
@@ -263,7 +273,6 @@ def summary(model, loader, args):
     for c in range(args.n_classes):
         results_dict.update({'p_{}'.format(c): all_probs[:,c]})
     df = pd.DataFrame(results_dict)
-    
     df_inst = pd.DataFrame([all_silde_ids, all_inst_score, all_inst_label]).T
     df_inst.columns = ['filename', 'prob', 'label']
     # print(df_inst)

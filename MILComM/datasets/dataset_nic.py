@@ -193,7 +193,8 @@ class Generic_WSI_Classification_Dataset(Dataset):
         if len(split) > 0:
             mask = self.slide_data['slide_id'].isin(split.tolist())
             df_slice = self.slide_data[mask].reset_index(drop=True)
-            split = Generic_Split(df_slice, data_dir=self.data_dir, data_mag=self.data_mag, num_classes=self.num_classes)
+            split = Generic_Split(df_slice, data_dir=self.data_dir, data_mag=self.data_mag,
+                                  num_classes=self.num_classes, task=self.task)
         else:
             split = None
 
@@ -205,11 +206,12 @@ class Generic_WSI_Classification_Dataset(Dataset):
             split = all_splits[split_key]
             split = split.dropna().reset_index(drop=True).tolist()
             merged_split.extend(split)
-
+            
         if len(split) > 0:
             mask = self.slide_data['slide_id'].isin(merged_split)
             df_slice = self.slide_data[mask].reset_index(drop=True)
-            split = Generic_Split(df_slice, data_dir=self.data_dir, num_classes=self.num_classes)
+            split = Generic_Split(df_slice, data_dir=self.data_dir, data_mag=self.data_mag,
+                                  task=self.task, num_classes=self.num_classes, size=self.size)
         else:
             split = None
 
@@ -222,22 +224,25 @@ class Generic_WSI_Classification_Dataset(Dataset):
         if from_id:
             if len(self.train_ids) > 0:
                 train_data = self.slide_data.loc[self.train_ids].reset_index(drop=True)
-                train_split = Generic_Split(train_data, data_dir=self.data_dir, data_mag=self.data_mag, num_classes=self.num_classes)
+                train_split = Generic_Split(train_data, data_dir=self.data_dir, data_mag=self.data_mag, sp_dir=self.sp_dir,
+                                            num_classes=self.num_classes, task=self.task)
 
             else:
                 train_split = None
 
             if len(self.val_ids) > 0:
                 val_data = self.slide_data.loc[self.val_ids].reset_index(drop=True)
-                val_split = Generic_Split(val_data, data_dir=self.data_dir, data_mag=self.data_mag, num_classes=self.num_classes)
+                val_split = Generic_Split(val_data, data_dir=self.data_dir, data_mag=self.data_mag, sp_dir=self.sp_dir,
+                                          num_classes=self.num_classes, task=self.task)
 
             else:
                 val_split = None
 
             if len(self.test_ids) > 0:
                 test_data = self.slide_data.loc[self.test_ids].reset_index(drop=True)
-                test_split = Generic_Split(test_data, data_dir=self.data_dir, data_mag=self.data_mag, num_classes=self.num_classes)
-
+                test_split = Generic_Split(test_data, data_dir=self.data_dir, data_mag=self.data_mag, 
+                                           sp_dir=self.sp_dir,
+                                           num_classes=self.num_classes, task=self.task)
             else:
                 test_split = None
 
@@ -313,19 +318,34 @@ class Generic_WSI_Classification_Dataset(Dataset):
         df = pd.concat([df_tr, df_v, df_t], axis=1) 
         df.to_csv(filename, index = False)
 
-
+ 
 class Generic_MIL_Dataset(Generic_WSI_Classification_Dataset):
-    def __init__(self,
-        data_dir,
-        data_mag,
-        **kwargs):
-
+    def __init__(self, data_dir, data_mag, task, size=512, **kwargs):
+        
         super(Generic_MIL_Dataset, self).__init__(**kwargs)
         
         self.data_dir = data_dir
         self.data_mag = data_mag
+        self.size = size
+        self.task = task
+        
+    def translabel(self, label, task):
+        if task == 'gastric_esd_subtyping':
+            label_dict = [[0,0],[0,1],[1,1]] # gastric_esd
+            # label_dict = [[0,0,1],[0,1,0],[0,1,1],[1,0,1],[1,1,1]] # gastric_esd tumor normal_gland inflammation 
+        elif task == 'gastric_subtyping':
+            label_dict = [[0,0,1],[0,1,0],[1,0,0],[0,1,1],[1,1,0],[1,0,1],[1,1,1]] # gastric low high muc
+        elif task == 'gleason_subtyping':
+            label_dict = [[0,0,0], [0,0,1], [0,1,0], [0,1,1], [1,0,0], [1,1,0], [1,1,1]] # gleason, delete '1,0,1':5,
+        elif task == 'crc_subtyping':
+            label_dict =  [[1, 1, 1, 0, 0], [1, 1, 0, 1, 0], [1, 1, 0, 0, 1], [1, 0, 1, 1, 0], [1, 0, 1, 0, 1], [1, 0, 0, 1, 1], [0, 1, 1, 1, 0], [0, 1, 1, 0, 1], [0, 1, 0, 1, 1], [0, 0, 1, 1, 1]] # crc
+        else:
+            raise NotImplementedError
+            
+        return label_dict[label]
 
-    def get_nic(self,features,coords,size,inst_label):
+    
+    def get_nic_with_coord(self, features, coords, size, inst_label):
         w = coords[:,0]
         h = coords[:,1]
         w_min = w.min()
@@ -336,59 +356,98 @@ class Generic_MIL_Dataset(Generic_WSI_Classification_Dataset):
         mask = np.ones((image_shape[0], image_shape[1]))
         labels = -np.ones((image_shape[0], image_shape[1]))
         features_nic = torch.ones((features.shape[-1], image_shape[0], image_shape[1])) * np.nan
+        coords_nic = -np.ones((image_shape[0], image_shape[1], 2))
         # Store each patch feature in the right position
         if inst_label != []:
             for patch_feature, x, y, label in zip(features, w, h, inst_label):
-                x, y = (x-w_min)//size, (y-h_min)//size
-                features_nic[:, x, y] = patch_feature
-                labels[x,y]=label
+                coord = [x,y]
+                x_nic, y_nic = (x-w_min)//size, (y-h_min)//size
+                features_nic[:, x_nic, y_nic] = patch_feature
+                coords_nic[x_nic, y_nic] = coord
+                labels[x_nic, y_nic]=label
         else:
             for patch_feature, x, y in zip(features, w, h):
-                x, y = (x-w_min)//size, (y-h_min)//size
-                features_nic[:, x, y] = patch_feature
+                coord = [x,y]
+                x_nic, y_nic = (x-w_min)//size, (y-h_min)//size
+                features_nic[:, x_nic, y_nic] = patch_feature
+                coords_nic[x_nic, y_nic] = coord
             labels=[]
 
         # Populate NaNs
-        
         mask[torch.isnan(features_nic)[0]] = 0
         features_nic[torch.isnan(features_nic)] = 0
-        return features_nic,mask,labels
+               
+        return features_nic, mask, labels, coords_nic
+
+    def split_nic_with_coord(self, features, inst_label, mask, coords, num):
+        features_split = []
+        mask_split = []
+        label_split = []
+        coords_split = []
+        num = int(math.sqrt(num))
+        for i in range(num):
+            for j in range(num):
+                features_nic = features[:,i::num,j::num]
+                mask_nic = mask[i::num,j::num]
+                coords_nic = coords[i::num,j::num]
+                features_split.append([features_nic])
+                mask_split.append(mask_nic)
+                coords_split+=list(coords_nic[np.where(mask_nic==1)])
+                if inst_label!=[]:
+                    inst_label_nic = inst_label[i::num,j::num]
+                    label_split+=list(inst_label_nic[np.where(mask_nic==1)])
+        return features_split, label_split, mask_split, coords_split
     
     def __getitem__(self, idx):
         slide_id = self.slide_data['slide_id'][idx]
         label = self.slide_data['label'][idx]
+        label = self.translabel(label, self.task)
         data_dir = self.data_dir
-        size = int(self.data_mag.split('_')[-1])
+        
+        slide_id = slide_id.split('.')[0]  # for conch
         full_path = os.path.join(data_dir,'{}_{}.npy'.format(slide_id, self.data_mag))
         
         record = np.load(full_path, allow_pickle=True)
-        
-        features = record[()]['feature3']
-#         features = features.reshape(features.shape[0]*features.shape[1], features.shape[-1])
+
+        #  features = record[()]['feature']
+        #  features = record[()]['feature3']        
+        if 'feature' in record[()].keys():
+             features = record[()]['feature']
+        else:
+            features = record[()]['feature2']
+        #  features = record[()]['feature4']
+        if type(features) is not torch.Tensor:
+            features = torch.from_numpy(features)
         
         coords = record[()]['index']
-        coords_nd = np.array([[int(i.split('_')[0]),int(i.split('_')[1])] for i in coords])
+        if type(coords[0]) is np.ndarray:
+            coords_nd = np.array(coords)
+        else:
+            coords_nd = np.array([[int(i.split('_')[0]),int(i.split('_')[1])] for i in coords])
+                
         inst_label = record[()]['inst_label']
-        features_nic,mask,inst_label_nic = self.get_nic(features,coords_nd,size,inst_label)
-        if inst_label_nic!=[]:
-            inst_label_nic = list(inst_label_nic[np.where(mask==1)])
-#         if inst_label != []: 
-#             inst_label = inst_label_nic
-#         if 'inst_label' in record[()].keys():
-#             inst_label = record[()]['inst_label']
-#         else:
-#             inst_label = []
+        features_nic, mask, inst_label_nic_nd, coords_nic = \
+            self.get_nic_with_coord(features, coords_nd, self.size, inst_label)
+        
+        if inst_label_nic_nd!=[]:
+            inst_label_nic = list(inst_label_nic_nd[np.where(mask==1)])
+        else:
+            inst_label_nic = inst_label_nic_nd
 
-        return features_nic, label, [coords,mask], inst_label_nic
-
-
+        return features_nic, label, [coords_nic, mask], inst_label_nic
+        
+        
+        
 class Generic_Split(Generic_MIL_Dataset):
-    def __init__(self, slide_data, data_dir=None, data_mag=None, num_classes=2):
+    def __init__(self, slide_data, task, data_dir=None, data_mag=None, 
+                 num_classes=2, size=512):
         
         self.slide_data = slide_data
         self.data_dir = data_dir
         self.num_classes = num_classes
         self.data_mag = data_mag
+        self.size = size
+        self.task = task
         self.slide_cls_ids = [[] for i in range(self.num_classes)]
         for i in range(self.num_classes):
             self.slide_cls_ids[i] = np.where(self.slide_data['label'] == i)[0]

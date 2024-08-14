@@ -9,6 +9,7 @@ from models.model_dsmil import DS_MIL
 from models.model_transmil import TransMIL
 from models.model_dtfd import DTFD_MIL_tier1, DTFD_MIL_tier2
 # from models.model_addmil import AdditiveClassifier, DefaultAttentionModule, DefaultMILGraph
+from models.model_nicwss import NICWSS
 
 import pdb
 import os
@@ -19,6 +20,7 @@ from sklearn.preprocessing import label_binarize
 from sklearn.metrics import roc_auc_score, roc_curve, accuracy_score, classification_report
 from sklearn.metrics import auc as calc_auc
 import matplotlib.pyplot as plt
+import utils.wsi_seam_utils as visualization
 
 def cal_pos_acc(pos_label,pos_score,inst_rate):
     df_score = pd.DataFrame([pos_label,pos_score]).T
@@ -143,7 +145,7 @@ def instance_report(n_classes, inst_binary_labels, inst_preds, inst_probs, all_i
     return inst_auc, inst_acc #, pos_accs, neg_acc
 
 def initiate_model(args, ckpt_path):
-    print('Init Model')    
+    print('Init Model')
     model_dict = {"dropout": args.drop_out, 'n_classes': args.n_classes, 'fea_dim': args.fea_dim}
     
     if args.model_size is not None and args.model_type != 'mil':
@@ -184,6 +186,9 @@ def initiate_model(args, ckpt_path):
         model_tier1 = DTFD_MIL_tier1(**model_dict)
         model_tier2 = DTFD_MIL_tier2(**model_dict)
         model = [model_tier1, model_tier2]
+    elif args.model_type in ['nic', 'nicwss']:
+        model_dict.update({'only_cam': args.only_cam})
+        model = NICWSS(**model_dict)
     else: # args.model_type == 'mil'
         if args.n_classes > 2:
             model = MIL_fc_mc(**model_dict)
@@ -266,8 +271,9 @@ def summary(model, loader, args):
     patient_results = {}
         
     for batch_idx, (data, label, cors, inst_label) in enumerate(loader):
+        import pdb; pdb.set_trace()
 
-        label = label.to(device)
+        data, label = data.to(device), label.to(device)
         
         index_label = torch.nonzero(label.squeeze()).to(device)
             
@@ -276,8 +282,9 @@ def summary(model, loader, args):
         
         slide_id = slide_ids.iloc[batch_idx]
             
-        data = data.to(device)
-        
+        if args.model_type in ['nic', 'nicwss']:
+            label_bn = label.unsqueeze(2).unsqueeze(3)
+            
         with torch.no_grad():
 
             if args.model_type == 'dtfd_mil':
@@ -285,24 +292,54 @@ def summary(model, loader, args):
                 logits = model_tier2(slide_pseudo_feat)
                 Y_hat = torch.topk(logits, 1, dim = 1)[1]
                 Y_prob = torch.sigmoid(logits)
+                score = score.T
+            elif args.model_type in ['nic', 'nicwss']:
+                if args.only_cam:
+                    cam = model(data, masked=True, train=False)
+                    label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+                    
+                    Y_prob = label_pred_cam_or.squeeze(3).squeeze(2)
+                    cam_raw = visualization.max_norm(cam)
+                    cam = visualization.max_norm(cam)  * label_bn
+                else:
+                    cam, cam_rv = model(data, masked=True, train=False)
+                    label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+                    label_pred_cam_rv = F.adaptive_avg_pool2d(cam_rv, (1, 1))
+                    Y_prob = (label_pred_cam_or * args.b_rv + label_pred_cam_rv * (1-args.b_rv)).squeeze(3).squeeze(2)
+                    
+                    cam_raw = visualization.max_norm(cam)
+                    cam = visualization.max_norm(cam)
+                    cam_rv = visualization.max_norm(cam_rv)
+                Y_hat = torch.argmax(Y_prob)
             else:
                 logits, Y_prob, Y_hat, score, _ = model(data)
+                score = score.T
 
         inst_label = inst_label[0]
         
-        score = score.T
+        
         
         if inst_label!=[]:
-            
-            inst_score, neg_score = instance_analysis(args.n_classes, score, inst_label, inst_probs, inst_preds, 
-                                                      inst_binary_labels, pos_accs_each_wsi, neg_accs_each_wsi, 
-                                                      args.inst_rate, index_label)
+            if args.model_type in ['nic', 'nicwss']:
+                mask = cors[1]
+                f_h, f_w = np.where(mask==1)
+                cam_n = cam_raw[0,:,...].squeeze(0)
+                inst_score = cam_n[:, f_h, f_w].T
+                inst_score, neg_score = instance_analysis(args.n_classes, inst_score, inst_label, inst_probs, inst_preds, 
+                                                          inst_binary_labels, pos_accs_each_wsi, neg_accs_each_wsi, 
+                                                          args.inst_rate, index_label)
+            else:
+                inst_score, neg_score = instance_analysis(args.n_classes, score, inst_label, inst_probs, inst_preds, 
+                                                        inst_binary_labels, pos_accs_each_wsi, neg_accs_each_wsi, 
+                                                        args.inst_rate, index_label)
 
             all_inst_score.append(inst_score)
             all_inst_score_neg += neg_score
+            import pdb; pdb.set_trace()
             if type(cors[0][0]) is np.ndarray:
                 cors = [["{}_{}_{}.png".format(str(cors[0][i][0]), str(cors[0][i][1]), args.p_size) for i in range(len(cors[0]))]]
-        
+                
+            # import pdb; pdb.set_trace()
             all_silde_ids += [os.path.join(slide_ids[batch_idx], cors[0][i]) for i in range(len(cors[0]))]
 
             
@@ -345,8 +382,9 @@ def summary(model, loader, args):
     df = pd.DataFrame(results_dict)
     if all_inst_score.shape[1]<args.n_classes+1:
         all_inst_score = np.insert(all_inst_score, args.n_classes, values=all_normal_score, axis=1)
+    import pdb; pdb.set_trace()
     inst_results_dict = {'filename':all_silde_ids,'label':all_inst_label}
-#     print(len(all_silde_ids),len(all_inst_label),all_inst_score.shape)
+    # print(len(all_silde_ids),len(all_inst_label),all_inst_score.shape)
     for c in range(args.n_classes+1):
         inst_results_dict.update({'prob_{}'.format(c): all_inst_score[:,c]})
     df_inst = pd.DataFrame(inst_results_dict)

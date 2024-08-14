@@ -12,6 +12,8 @@ from utils.utils import *
 from math import floor
 import matplotlib.pyplot as plt
 from datasets.dataset_generic_npy import Generic_MIL_Dataset
+from datasets.dataset_nic import Generic_MIL_Dataset as NIC_MIL_Dataset
+from datasets.dataset_nic_ovarian import Generic_MIL_Dataset_ovarian
 import h5py
 from utils.eval_utils import *
 
@@ -62,6 +64,17 @@ parser.add_argument('--bag_weight', type=float, default=0.7,
                     help='clam: weight coefficient for bag-level loss (default: 0.7)')
 parser.add_argument('--B', type=int, default=8, help='numbr of positive/negative patches to sample for clam')
 
+### NICWSS specific options
+parser.add_argument('--only_cam', action='store_true', default=False,
+                    help='if only cam, without PCM module')
+parser.add_argument('--b_rv', type=float, default=1.0, 
+                    help='parameter to balance the cam and cam_rv')
+parser.add_argument('--w_cls', type=float, default=1.0, 
+                    help='loss function weight for classification')
+parser.add_argument('--w_er', type=float, default=1.0, 
+                    help='loss function weight for Equivarinat loss')
+parser.add_argument('--w_ce', type=float, default=1.0, 
+                    help='loss function weight for conditional entropy')
 
 args = parser.parse_args()
 
@@ -96,12 +109,20 @@ if 'inst_loss' in conf:
     args.inst_loss=conf['inst_loss']
 if 'inst_rate' in conf:
     args.inst_loss=conf['inst_rate']
-if 'subtyping' in conf:
-    args.subtyping=conf['subtyping']
-if 'bag_weight' in conf:
-    args.bag_weight=conf['bag_weight']
-if 'B' in conf:
-    args.B=conf['B']
+
+if args.model_type in ['clam_sb', 'clam_mb']:
+    if 'subtyping' in conf:
+        args.subtyping=conf['subtyping']
+    if 'bag_weight' in conf:
+        args.bag_weight=conf['bag_weight']
+    if 'B' in conf:
+        args.B=conf['B']
+elif args.model_type in ['nic', 'nicwss']:
+    args.only_cam = conf['only_cam']
+    args.b_rv = conf['b_rv']
+    args.w_cls = conf['w_cls']
+    args.w_er = conf['w_er']
+    args.w_ce = conf['w_ce']
 
 settings = {'task': args.task,
             'split': args.split,
@@ -111,26 +132,48 @@ settings = {'task': args.task,
             'drop_out': args.drop_out,
             'model_size': args.model_size}
 
+if args.model_type in ['nic', 'nicwss']:
+    settings.update({'only_cam': args.only_cam,
+                     'b_rv': args.b_rv,
+                     'w_cls': args.w_cls,
+                     'w_er': args.w_er,
+                     'w_ce': args.w_ce})
+
 with open(args.save_dir + '/eval_experiment_{}.txt'.format(args.save_exp_code), 'w') as f:
     print(settings, file=f)
 f.close()
 
 print(settings)
-if args.task == 'gastric_subtype':
+
+
+dataset_params = {
+    'csv_path' : 'dataset_csv/renal_subtyping_npy.csv',
+    'data_dir' : args.data_root_dir,
+    'data_mag' :'1_512',
+    'shuffle' : False, 
+    'seed' : 10, 
+    'print_info': True,
+    'label_dict' : {'ccrcc':0, 'prcc':1, 'chrcc':2},
+    'patient_strat': False,
+    'ignore': [],
+    'task': args.task
+}
+
+if args.task == 'gastric_subtyping':
     args.n_classes = 3
     args.p_size=2048
-    dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/gastric_subtyping_npy.csv',
-                                data_dir = args.data_root_dir,
-                                data_mag = '1_512',
-                                task = args.task,
-                                shuffle = False, 
-                                seed = 10, 
-                                print_info = True,
-                                label_dict = {'0,0,1':0, '0,1,0':1, '1,0,0':2,'0,1,1':3, '1,1,0':4, '1,0,1':5, '1,1,1':6},
-                                patient_strat= False,
-                                ignore=[])
+    dataset_params['csv_path'] = 'dataset_csv/gastric_subtyping_npy.csv'
+    dataset_params['data_mag'] = '10x512'  # conch specific
+    dataset_params['label_dict'] = {'0,0,1':0, '0,1,0':1, '1,0,0':2,'0,1,1':3, '1,1,0':4, '1,0,1':5, '1,1,1':6}
+    if args.model_type in ['nicwss', 'nic']:
+        dataset = NIC_MIL_Dataset(**dataset_params)
+    else:
+        dataset = Generic_MIL_Dataset(**dataset_params)
+    
+    if args.model_type in ['clam_sb', 'clam_mb']:
+        assert args.subtyping
         
-elif args.task == 'gleason_subtype':
+elif args.task == 'gleason_subtyping':
     args.n_classes = 3
     args.p_size=1024
     dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/gleason_subtyping_npy.csv',
@@ -145,7 +188,7 @@ elif args.task == 'gleason_subtype':
                                 patient_strat= False,
                                 ignore=[])
 
-elif args.task == 'gastric_esd_subtype':
+elif args.task == 'gastric_esd_subtyping':
     args.n_classes = 2
     args.p_size=512
     dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/gastric_esd_subtyping_npy_new.csv',

@@ -9,10 +9,12 @@ from models.model_clam import CLAM_MB, CLAM_SB, ADD_MIL
 from models.model_dsmil import DS_MIL
 from models.model_transmil import TransMIL
 from models.model_dtfd import DTFD_MIL_tier1, DTFD_MIL_tier2
+from models.model_nicwss import NICWSS
 # from models.model_addmil import AdditiveClassifier, DefaultAttentionModule, DefaultMILGraph
 from sklearn.preprocessing import label_binarize
 from sklearn.metrics import roc_auc_score, roc_curve, accuracy_score, classification_report
 from sklearn.metrics import auc as calc_auc
+import utils.wsi_seam_utils as visualization
 
 # torch.multiprocessing.set_start_method('spawn', force=True)
 
@@ -307,6 +309,9 @@ def train(datasets, cur, args):
         model_tier1 = DTFD_MIL_tier1(**model_dict)
         model_tier2 = DTFD_MIL_tier2(**model_dict)
         model = [model_tier1, model_tier2]
+    elif args.model_type in ['nic', 'nicwss']:
+        model_dict.update({'only_cam': args.only_cam})
+        model = NICWSS(**model_dict)
     else:
         raise NotImplementedError
     
@@ -370,6 +375,11 @@ def train(datasets, cur, args):
             train_loop_dtfdmil(epoch, model, train_loader, optimizer, args.n_classes, writer, loss_fn, args.inst_rate)
             stop = validate_dtfdmil(cur, epoch, model, val_loader, args.n_classes, 
                                     early_stopping, writer, loss_fn, args.results_dir, args.inst_rate)
+        elif args.model_type in ['nic', 'nicwss']:
+            train_loop_nicwss(epoch, model, train_loader, optimizer, args.n_classes, args.only_cam, args.b_rv, args.w_cls, args.w_er, args.w_ce,
+                    writer, args.inst_rate)
+            stop = validate_nicwss(cur, epoch, model, val_loader, args.n_classes, early_stopping, args.only_cam, args.b_rv, args.w_cls, args.w_er, args.w_ce,
+                                   writer, args.inst_rate, args.task, args.results_dir)
         else:
             raise NotImplementedError
         
@@ -524,7 +534,7 @@ def train_loop_clam(epoch, model, loader, optimizer, n_classes, bag_weight, writ
         writer.add_scalar('train/neg_acc', neg_acc, epoch)
         writer.add_scalar('train/loss', train_loss, epoch)
         writer.add_scalar('train/error', train_error, epoch)
-        writer.add_scalar('train/inst_auc', inst_auc, epoch)  
+        writer.add_scalar('train/inst_auc', inst_auc, epoch)
 
 def train_loop_dsmil(epoch, model, loader, optimizer, n_classes, writer = None, loss_fn = None, inst_rate=0.1):
     device=torch.device("cuda" if torch.cuda.is_available() else "cpu") 
@@ -901,6 +911,138 @@ def train_loop_dtfdmil(epoch, model, loader, optimizer, n_classes, writer = None
         writer.add_scalar('train/loss', train_loss, epoch)
         writer.add_scalar('train/error', train_error, epoch)
         writer.add_scalar('train/inst_auc', inst_auc, epoch)  
+
+def train_loop_nicwss(epoch, model, loader, optimizer, n_classes, for_cam=False, b_rv=0.5, w_cls=1.0, w_er=1.0, w_ce=1.0,
+                      writer = None, inst_rate = 0.01): 
+    
+    device=torch.device("cuda" if torch.cuda.is_available() else "cpu") 
+    model.train()
+    acc_logger = Accuracy_Logger(n_classes=n_classes)
+    train_loss = 0.
+    train_cls_loss = 0.
+    train_er_loss = 0.
+    train_ce_loss = 0.
+    train_error = 0.
+
+    all_inst_score = []    
+    all_inst_score_neg = []
+    
+    inst_probs = [[] for _ in range(n_classes+1)]
+    inst_preds = [[] for _ in range(n_classes+1)]
+    inst_binary_labels = [[] for _ in range(n_classes+1)]
+    
+    pos_accs_each_wsi = [[] for _ in range(n_classes)]
+    neg_accs_each_wsi = []
+
+    print('\n')
+    for batch_idx, (data, label, cors, inst_label) in enumerate(loader):
+        
+        label = label.to(device)
+        label_bn = label.unsqueeze(2).unsqueeze(3)
+        index_label = torch.nonzero(label.squeeze()).to(device)
+        
+        # data = data[0]
+        data = data.to(device)
+        
+        if for_cam:  # for nic
+            cam = model(data, masked=True, train=True)
+            label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+            loss_cls1 = F.multilabel_soft_margin_loss(label_pred_cam_or, label_bn)
+            cam_raw = visualization.max_norm(cam)
+            cam = visualization.max_norm(cam) * label_bn
+            Y_prob = label_pred_cam_or.squeeze(3).squeeze(2)
+            
+            # total loss
+            loss = loss_cls1
+            
+        else:  # for nicwss
+            cam, cam_rv, valid_pixels = model(data, masked=True, train=True)
+            label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+            label_pred_cam_rv = F.adaptive_avg_pool2d(cam_rv, (1, 1))
+            loss_cls1 = F.multilabel_soft_margin_loss(label_pred_cam_or, label_bn)
+            loss_cls2 = F.multilabel_soft_margin_loss(label_pred_cam_rv, label_bn)
+            cam_raw = visualization.max_norm(cam)
+            cam = visualization.max_norm(cam) * label_bn
+            cam_rv = visualization.max_norm(cam_rv) * label_bn
+            # Equivarinat loss
+            loss_er = torch.mean(torch.abs(cam - cam_rv))
+            
+            cond_entropy = -((valid_pixels * (cam_rv * torch.log(cam + 1e-10))).sum(1))
+            cond_entropy = cond_entropy.sum(dim=(1, 2))
+            cond_entropy /= valid_pixels.squeeze(1).sum(dim=(1, 2))
+            cond_entropy = cond_entropy.mean(0)
+            
+            Y_prob = (label_pred_cam_or * b_rv + label_pred_cam_rv * (1-b_rv)).squeeze(3).squeeze(2)
+            
+            # total loss
+            loss_cls = loss_cls1 * b_rv + loss_cls2 * (1-b_rv)
+            loss = w_cls * loss_cls + w_er * loss_er + w_ce * cond_entropy
+            train_cls_loss += loss_cls.item()
+            train_er_loss += loss_er.item()
+            train_ce_loss += cond_entropy.item()
+
+        Y_hat = torch.argmax(Y_prob)
+        
+        acc_logger.log(Y_hat, index_label)
+
+        error = calculate_error(Y_hat, label)
+        train_error += error
+        
+        loss_value = loss.item()
+        
+        train_loss += loss_value
+
+        # backward pass
+        loss.backward()
+        # step
+        optimizer.step()
+        optimizer.zero_grad()
+        
+        # instance calculation part
+        inst_label = inst_label[0]
+        if inst_label!=[]:  # instance score
+            mask = cors[1]
+            f_h, f_w = np.where(mask==1)
+            cam_n = cam_raw[0,: ,...].squeeze(0)
+            inst_score = cam_n[:, f_h, f_w].T
+            inst_score, neg_score = instance_analysis(n_classes, inst_score, inst_label, inst_probs, inst_preds, inst_binary_labels, 
+                                            pos_accs_each_wsi, neg_accs_each_wsi, inst_rate, index_label)
+        
+            all_inst_score.append(inst_score)
+            all_inst_score_neg += neg_score
+
+    # calculate loss and error for epoch
+    train_loss /= len(loader)
+    train_cls_loss /= len(loader)
+    train_er_loss /= len(loader)
+    train_ce_loss /= len(loader)
+    train_error /= len(loader)
+    
+    inst_auc, inst_acc, pos_accs, neg_acc = instance_report(n_classes, inst_binary_labels, inst_preds, inst_probs, 
+                                                            all_inst_score, all_inst_score_neg, 
+                                                            pos_accs_each_wsi, neg_accs_each_wsi, inst_rate)
+    
+    print('Epoch: {}, train_loss: {:.4f}, train_error: {:.4f}, inst_auc: {:.4f}, inst_acc: {:.4f}'\
+          .format(epoch, train_loss, train_error, inst_auc, inst_acc))
+    
+    for i in range(n_classes):
+        acc, correct, count = acc_logger.get_summary(i)
+        print('class {}: acc {}, correct {}/{}'.format(i, acc, correct, count))
+        if writer:
+            writer.add_scalar('train/class_{}_acc'.format(i), acc, epoch)
+
+    if writer:
+        for i in range(n_classes):
+            writer.add_scalar('train/pos_acc_{}'.format(str(i)), pos_accs[i], epoch)
+        writer.add_scalar('train/neg_acc', neg_acc, epoch)
+        writer.add_scalar('train/loss', train_loss, epoch)
+        writer.add_scalar('train/error', train_error, epoch)
+        writer.add_scalar('train/inst_auc', inst_auc, epoch)
+        if not for_cam:
+            writer.add_scalar('train/cls_loss', train_cls_loss, epoch)
+            writer.add_scalar('train/er_loss', train_er_loss, epoch)
+            writer.add_scalar('train/ce_loss', train_ce_loss, epoch)
+
 
 def validate_clam(cur, epoch, model, loader, n_classes, early_stopping = None, writer = None, loss_fn = None, 
                   results_dir = None, inst_rate=0.1, instance_eval=True):
@@ -1443,6 +1585,140 @@ def validate_dtfdmil(cur, epoch, model, loader, n_classes, early_stopping = None
 
     return False
 
+def validate_nicwss(cur, epoch, model, loader, n_classes, early_stopping = None, for_cam=False, b_rv=0.5, w_cls=1.0, w_er=1.0, w_ce=1.0,
+                    writer = None, inst_rate=0.01, task='camelyon', results_dir=None):
+    device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.eval()
+    acc_logger = Accuracy_Logger(n_classes=n_classes)
+    # loader.dataset.update_mode(True)
+    val_loss = 0.
+    val_error = 0.
+    all_inst_label = []
+    all_inst_score = []
+    all_inst_pred = []
+    
+    all_inst_score_pos = []
+    all_inst_score_neg = []
+    
+    inst_probs = [[] for _ in range(n_classes+1)]
+    inst_preds = [[] for _ in range(n_classes+1)]
+    inst_binary_labels = [[] for _ in range(n_classes+1)]
+    
+    pos_accs_each_wsi = [[] for _ in range(n_classes)]
+    neg_accs_each_wsi = []
+    
+    all_probs = np.zeros((len(loader), n_classes))
+    all_labels = np.zeros((len(loader), n_classes))
+
+    with torch.no_grad():
+        for batch_idx, (data, label, cors, inst_label) in enumerate(loader):
+            
+            data, label = data.to(device), label.to(device)
+            label_bn = label.unsqueeze(2).unsqueeze(3)
+            index_label = torch.nonzero(label.squeeze()).to(device)
+            
+            if for_cam:
+                cam = model(data, masked=True, train=False)
+                label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+                loss_cls1 = F.multilabel_soft_margin_loss(label_pred_cam_or, label_bn)
+                cam_raw = visualization.max_norm(cam)
+                cam = visualization.max_norm(cam)  * label_bn
+                Y_prob = label_pred_cam_or.squeeze(3).squeeze(2)
+                # Classification loss
+                loss = loss_cls1
+            else:
+                cam, cam_rv = model(data, masked=True, train=False)
+                cam_raw = visualization.max_norm(cam)
+                
+                label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+                label_pred_cam_rv = F.adaptive_avg_pool2d(cam_rv, (1, 1))
+
+                loss_cls1 = F.multilabel_soft_margin_loss(label_pred_cam_or, label_bn)
+                loss_cls2 = F.multilabel_soft_margin_loss(label_pred_cam_rv, label_bn)
+                
+                cam = visualization.max_norm(cam) * label_bn  # v8 changed
+                cam_rv = visualization.max_norm(cam_rv) * label_bn
+                
+                Y_prob = (label_pred_cam_or * b_rv + label_pred_cam_rv * (1-b_rv)).squeeze(3).squeeze(2)
+                # Classification loss
+                loss_cls = loss_cls1 * b_rv + loss_cls2 * (1-b_rv)
+                loss = loss_cls
+            
+            Y_hat = torch.argmax(Y_prob)
+            
+
+            acc_logger.log(Y_hat, index_label) 
+
+            error = calculate_error(Y_hat, label)
+
+            val_error += error
+
+            loss_value = loss.item()
+
+            val_loss += loss_value
+
+            # instance calculation part
+            inst_label = inst_label[0]
+            
+            if inst_label!=[]:
+                mask = cors[1]
+                f_h, f_w = np.where(mask==1)
+                cam_n = cam_raw[0,:,...].squeeze(0)
+                inst_score = cam_n[:, f_h, f_w].T
+                inst_score, neg_score = instance_analysis(n_classes, inst_score, inst_label, inst_probs, inst_preds, 
+                                                        inst_binary_labels, pos_accs_each_wsi, neg_accs_each_wsi, 
+                                                        inst_rate, index_label)
+
+                all_inst_score.append(inst_score)
+                all_inst_score_neg += neg_score
+                
+            probs = Y_prob.cpu().numpy()
+            all_probs[batch_idx] = probs
+            all_labels[batch_idx] = label.squeeze().detach().cpu().numpy()
+            
+
+    val_error /= len(loader)
+    val_loss /= len(loader)
+    
+    inst_auc, inst_acc, pos_accs, neg_acc = instance_report(n_classes, inst_binary_labels, inst_preds, inst_probs, 
+                                                        all_inst_score, all_inst_score_neg, 
+                                                        pos_accs_each_wsi, neg_accs_each_wsi, inst_rate)
+
+
+    if task == 'camelyon':
+        auc = roc_auc_score(all_labels, all_probs[:, 1])
+    else:
+        aucs = []
+        binary_labels = all_labels
+        for class_idx in range(n_classes):
+            fpr, tpr, _ = roc_curve(binary_labels[:, class_idx], all_probs[:, class_idx])
+            aucs.append(calc_auc(fpr, tpr))
+
+        auc = np.nanmean(np.array(aucs))
+
+    if writer:
+        writer.add_scalar('val/loss', val_loss, epoch)
+        writer.add_scalar('val/auc', auc, epoch)
+        writer.add_scalar('val/error', val_error, epoch)
+        writer.add_scalar('val/inst_auc', inst_auc, epoch)
+        
+
+    print('\nVal Set, val_loss: {:.4f}, val_error: {:.4f}, auc: {:.4f}, inst_auc: {:.4f}'.format(val_loss, val_error, auc, inst_auc))
+    for i in range(n_classes):
+        acc, correct, count = acc_logger.get_summary(i)
+        print('class {}: acc {}, correct {}/{}'.format(i, acc, correct, count))     
+
+    if early_stopping:
+        assert results_dir
+        early_stopping(epoch, val_loss, model, ckpt_name = os.path.join(results_dir, "s_{}_checkpoint.pt".format(cur)))
+        
+        if early_stopping.early_stop:
+            print("Early stopping")
+            return True
+
+    return False
+
+
 def summary(model, loader, args):
     acc_logger = Accuracy_Logger(n_classes=args.n_classes)
     
@@ -1477,17 +1753,16 @@ def summary(model, loader, args):
         
     for batch_idx, (data, label, cors, inst_label) in enumerate(loader):
 
-        label = label.to(device)
+        data, label = data.to(device), label.to(device)
         
         index_label = torch.nonzero(label.squeeze()).to(device)
-            
-        if inst_label!=[]:
-            all_inst_label += inst_label
         
         slide_id = slide_ids.iloc[batch_idx]
-            
-        data = data.to(device)
         
+        if args.model_type in ['nic', 'nicwss']:
+            label_bn = label.unsqueeze(2).unsqueeze(3)
+        
+  
         with torch.no_grad():
 
             if args.model_type == 'dtfd_mil':
@@ -1495,18 +1770,45 @@ def summary(model, loader, args):
                 logits = model_tier2(slide_pseudo_feat)
                 Y_hat = torch.topk(logits, 1, dim = 1)[1]
                 Y_prob = torch.sigmoid(logits)
+                score = score.T
+            elif args.model_type in ['nic', 'nicwss']:
+                if args.only_cam:
+                    cam = model(data, masked=True, train=False)
+                    label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+                    
+                    Y_prob = label_pred_cam_or.squeeze(3).squeeze(2)
+                    cam_raw = visualization.max_norm(cam)
+                    cam = visualization.max_norm(cam)  * label_bn
+                else:
+                    cam, cam_rv = model(data, masked=True, train=False)
+                    label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+                    label_pred_cam_rv = F.adaptive_avg_pool2d(cam_rv, (1, 1))
+                    Y_prob = (label_pred_cam_or * args.b_rv + label_pred_cam_rv * (1-args.b_rv)).squeeze(3).squeeze(2)
+                    
+                    cam_raw = visualization.max_norm(cam)
+                    cam = visualization.max_norm(cam)
+                    cam_rv = visualization.max_norm(cam_rv)
+                    
+                Y_hat = torch.argmax(Y_prob)
             else:
                 logits, Y_prob, Y_hat, score, _ = model(data)
 
         inst_label = inst_label[0]
         
-        score = score.T
-        
         if inst_label!=[]:
-            
-            inst_score, neg_score = instance_analysis(args.n_classes, score, inst_label, inst_probs, inst_preds, 
-                                                      inst_binary_labels, pos_accs_each_wsi, neg_accs_each_wsi, 
-                                                      args.inst_rate, index_label)
+            if args.model_type in ['nic', 'nicwss']:
+                mask = cors[1]
+                f_h, f_w = np.where(mask==1)
+                cam_n = cam_raw[0,:,...].squeeze(0)
+                inst_score = cam_n[:, f_h, f_w].T
+                inst_score, neg_score = instance_analysis(args.n_classes, inst_score, inst_label, inst_probs, inst_preds, 
+                                                          inst_binary_labels, pos_accs_each_wsi, neg_accs_each_wsi, 
+                                                          args.inst_rate, index_label)
+        
+            else:
+                inst_score, neg_score = instance_analysis(args.n_classes, score, inst_label, inst_probs, inst_preds, 
+                                                        inst_binary_labels, pos_accs_each_wsi, neg_accs_each_wsi, 
+                                                        args.inst_rate, index_label)
 
             all_inst_score.append(inst_score)
             all_inst_score_neg += neg_score
@@ -1531,7 +1833,7 @@ def summary(model, loader, args):
     # calculate inst_auc and inst_acc   
     
     all_inst_score = np.concatenate(all_inst_score,axis=0)
-    all_normal_score = [1-x for x in all_inst_score_neg] #转化为是normal类的概率 越高越好
+    all_normal_score = [1-x for x in all_inst_score_neg]  # 转化为是normal类的概率 越高越好
 
     aucs = []
     binary_labels = all_labels

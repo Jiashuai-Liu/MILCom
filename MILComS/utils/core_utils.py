@@ -189,6 +189,7 @@ def train(datasets, cur, args):
         model_tier2 = DTFD_MIL_tier2(**model_dict)
         model = [model_tier1, model_tier2]
     elif args.model_type in ['nic', 'nicwss']:
+        model_dict.update({'only_cam': args.only_cam})
         model = NICWSS(**model_dict)
     else: # args.model_type == 'mil'
         if args.n_classes > 2:
@@ -820,21 +821,47 @@ def train_loop_nicwss(epoch, model, loader, optimizer, n_classes, for_cam=False,
         data = data.to(device)
         mask = cors[1]
         
-        cam = model(data, masked=True, train=True)
-
-        label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+        if for_cam:  # for nic
+            cam = model(data, masked=True, train=True)
+            label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+            loss_cls1 = F.multilabel_soft_margin_loss(label_pred_cam_or, label_bn)
+            cam = visualization.max_norm(cam) * label_bn
+            Y_prob = label_pred_cam_or.squeeze(3).squeeze(2)
+            
+            # total loss
+            loss = loss_cls1
+            
+        else:  # for nicwss
+            cam, cam_rv, valid_pixels = model(data, masked=True, train=True)
+            label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+            label_pred_cam_rv = F.adaptive_avg_pool2d(cam_rv, (1, 1))
+            loss_cls1 = F.multilabel_soft_margin_loss(label_pred_cam_or, label_bn)
+            loss_cls2 = F.multilabel_soft_margin_loss(label_pred_cam_rv, label_bn)
+            cam = visualization.max_norm(cam) * label_bn
+            cam_rv = visualization.max_norm(cam_rv) * label_bn
+            # Equivarinat loss
+            loss_er = torch.mean(torch.abs(cam - cam_rv))
+            
+            cond_entropy = -((valid_pixels * (cam_rv * torch.log(cam + 1e-10))).sum(1))
+            cond_entropy = cond_entropy.sum(dim=(1, 2))
+            cond_entropy /= valid_pixels.squeeze(1).sum(dim=(1, 2))
+            cond_entropy = cond_entropy.mean(0)
+            
+            Y_prob = (label_pred_cam_or * b_rv + label_pred_cam_rv * (1-b_rv)).squeeze(3).squeeze(2)
+            
+            # total loss
+            loss_cls = loss_cls1 * b_rv + loss_cls2 * (1-b_rv)
+            loss = w_cls * loss_cls + w_er * loss_er + w_ce * cond_entropy
+            train_cls_loss += loss_cls.item()
+            train_er_loss += loss_er.item()
+            train_ce_loss += cond_entropy.item()
+            
         
-        loss_cls1 = F.multilabel_soft_margin_loss(label_pred_cam_or, label_bn)
-        
-        # Equivarinat loss
         cam_raw = visualization.max_norm(cam)
-        cam = visualization.max_norm(cam) * label_bn
-        
-
-        Y_prob = label_pred_cam_or.squeeze(3).squeeze(2)
+                
         Y_hat = torch.argmax(Y_prob)
         # Total loss
-        loss = loss_cls1
+
         
         acc_logger.log(Y_hat, label)
 
@@ -1544,20 +1571,38 @@ def validate_nicwss(cur, epoch, model, loader, n_classes, early_stopping = None,
 
             data = data.to(device)
             mask = cors[1]
-
-            cam = model(data, masked=True, train=False)
-
-            label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
-
-            loss_cls1 = F.multilabel_soft_margin_loss(label_pred_cam_or, label_bn)
             
-            cam_raw = visualization.max_norm(cam)
-            cam = visualization.max_norm(cam)  * label_bn
+            if for_cam:
+                cam = model(data, masked=True, train=False)
+                label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+                loss_cls1 = F.multilabel_soft_margin_loss(label_pred_cam_or, label_bn)
+                cam_raw = visualization.max_norm(cam)
+                cam = visualization.max_norm(cam)  * label_bn
+                Y_prob = label_pred_cam_or.squeeze(3).squeeze(2)
+                # Classification loss
+                loss = loss_cls1
+            else:
+                cam, cam_rv = model(data, masked=True, train=False)
+                cam_raw = visualization.max_norm(cam)
+                
+                label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+                label_pred_cam_rv = F.adaptive_avg_pool2d(cam_rv, (1, 1))
+
+                loss_cls1 = F.multilabel_soft_margin_loss(label_pred_cam_or, label_bn)
+                loss_cls2 = F.multilabel_soft_margin_loss(label_pred_cam_rv, label_bn)
+                
+                cam = visualization.max_norm(cam) * label_bn  # v8 changed
+                cam_rv = visualization.max_norm(cam_rv) * label_bn
+                
+                Y_prob = (label_pred_cam_or * b_rv + label_pred_cam_rv * (1-b_rv)).squeeze(3).squeeze(2)
+                # Classification loss
+                loss_cls = loss_cls1 * b_rv + loss_cls2 * (1-b_rv)
+                loss = loss_cls
             
-            Y_prob = label_pred_cam_or.squeeze(3).squeeze(2)
+            
+            
             Y_hat = torch.argmax(Y_prob)
-            # Classification loss
-            loss = loss_cls1
+            
 
             acc_logger.log(Y_hat, label) 
 
@@ -1684,14 +1729,24 @@ def summary(model, loader, args):
                 Y_prob = torch.softmax(logits, dim=1)
                 score = score.T
             elif args.model_type in ['nic', 'nicwss']:
-                cam = model(data, masked=True, train=False)
-                label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
-                
-                Y_prob = label_pred_cam_or.squeeze(3).squeeze(2)
+                if args.only_cam:
+                    cam = model(data, masked=True, train=False)
+                    label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+                    
+                    Y_prob = label_pred_cam_or.squeeze(3).squeeze(2)
+                    cam_raw = visualization.max_norm(cam)
+                    cam = visualization.max_norm(cam)  * label_bn
+                else:
+                    cam, cam_rv = model(data, masked=True, train=False)
+                    label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
+                    label_pred_cam_rv = F.adaptive_avg_pool2d(cam_rv, (1, 1))
+                    Y_prob = (label_pred_cam_or * args.b_rv + label_pred_cam_rv * (1-args.b_rv)).squeeze(3).squeeze(2)
+                    
+                    cam_raw = visualization.max_norm(cam)
+                    cam = visualization.max_norm(cam)
+                    cam_rv = visualization.max_norm(cam_rv)
+                    
                 Y_hat = torch.argmax(Y_prob)
-                
-                cam_raw = visualization.max_norm(cam)
-                cam = visualization.max_norm(cam)  * label_bn
             else:
                 logits, Y_prob, Y_hat, score, _ = model(data)
                 score = score.T

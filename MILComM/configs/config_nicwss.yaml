@@ -1,0 +1,43 @@
+# configs of task and path
+task: 'gastric_subtyping'
+data_root_dir: '/data_nas/ljs/Stomach/feature_conch/'
+exp_code: 'gastric_subtyping_nicwss_conch_10x512_5fold'
+
+
+label_frac: 1
+results_dir: './results'
+
+# configs of training
+seed: 1
+k: 5
+k_start: 0
+k_end: 5
+max_epochs: 200
+lr: 2e-5  # change for nicwss, before is 0.0001
+reg: 0.00001
+early_stopping: True
+drop_out: True
+drop_rate: 0.25
+opt: 'adam'
+bag_loss: 'ce'
+weighted_sample: True
+log_data:  True
+testing: False
+
+# configs of model
+model_type: 'nicwss'
+model_size: 'small' # 'big', small for nicwss
+fea_dim: 512 # for conch
+no_inst_cluster:  True
+inst_loss:  None
+subtyping:  True
+bag_weight:  0.7
+B:  8
+
+# configs of nicwss
+only_cam: False  # only_cam for nic
+b_rv: 0.8
+w_cls: 1.0
+w_er: 0.1
+w_ce: 0.1
+inst_rate: 0.01
