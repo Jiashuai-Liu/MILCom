@@ -19,9 +19,9 @@
 # data_root_dir: '/data_nas/ljs/Lung/feature_conch/'
 # exp_code: 'lung_subtyping_nicwss_conch_10x512_5fold'
 
-task: 'kica_subtyping'
-data_root_dir: '/data_nas/ljs/KICA/feature_conch/'
-exp_code: 'kica_subtyping_nicwss_conch_10x512_5fold'
+# task: 'kica_subtyping'
+# data_root_dir: '/data_nas/ljs/KICA/feature_conch/'
+# exp_code: 'kica_subtyping_nicwss_conch_10x512_5fold'
 
 # task: 'kica_staging'
 # data_root_dir: '/data_nas/ljs/KICA/feature_conch/'
@@ -31,8 +31,12 @@ exp_code: 'kica_subtyping_nicwss_conch_10x512_5fold'
 # data_root_dir: '/data_nas/ljs/ESCA/feature_conch/'
 # exp_code: 'esca_staging_nicwss_conch_10x512_5fold'
 
+task: 'camelyon'
+data_root_dir: '/home3/gzy/Camelyon/feature_resnet_new'
+exp_code: 'camelyon_resnet_conch_0_512_5fold'
 
-label_frac: 1
+
+label_frac: 0.8
 results_dir: './results'
 
 # configs of training
@@ -55,7 +59,7 @@ testing: False
 # configs of model
 model_type: 'nicwss'
 model_size: 'small' # 'big', small for nicwss
-fea_dim: 512 # for conch
+fea_dim: 1024 # 512 for conch, 1024 for resnet
 no_inst_cluster:  True
 inst_loss:  None
 subtyping:  True

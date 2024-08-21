@@ -807,8 +807,10 @@ def train_loop_nicwss(epoch, model, loader, optimizer, n_classes, for_cam=False,
         
         label = label.to(device)
         label_bn = torch.zeros(n_classes)
-        label_bn[label.long()] = 1
-        label_bn = label_bn.to(device)
+        # label_bn[label.long()] = 1  # for multi-class
+        # label_bn = label_bn.to(device)
+        
+        label_bn = label.to(device)  # for binary
         
         label_bn = label_bn.unsqueeze(0).unsqueeze(2).unsqueeze(3)
         
@@ -837,6 +839,9 @@ def train_loop_nicwss(epoch, model, loader, optimizer, n_classes, for_cam=False,
             label_pred_cam_rv = F.adaptive_avg_pool2d(cam_rv, (1, 1))
             loss_cls1 = F.multilabel_soft_margin_loss(label_pred_cam_or, label_bn)
             loss_cls2 = F.multilabel_soft_margin_loss(label_pred_cam_rv, label_bn)
+            
+            # import pdb; pdb.set_trace()
+            
             cam = visualization.max_norm(cam) * label_bn
             cam_rv = visualization.max_norm(cam_rv) * label_bn
             # Equivarinat loss
@@ -1716,8 +1721,11 @@ def summary(model, loader, args):
         
         if args.model_type in ['nic', 'nicwss']:
             label_bn = torch.zeros(args.n_classes)
-            label_bn[label.long()] = 1
-            label_bn = label_bn.to(device)
+            # label_bn[label.long()] = 1  # for multi_class
+            # label_bn = label_bn.to(device)
+            
+            label_bn = label.to(device)
+            
             label_bn = label_bn.unsqueeze(0).unsqueeze(2).unsqueeze(3)
         
         
@@ -1759,7 +1767,8 @@ def summary(model, loader, args):
             if args.model_type in ['nic', 'nicwss']:                
                 mask = cors[1]
                 f_h, f_w = np.where(mask==1)
-                cam_n = cam_raw[0, label,...].squeeze(0).data.cpu().numpy()
+                # cam_n = cam_raw[0, label,...].squeeze(0).data.cpu().numpy()
+                cam_n = cam_raw[0, :,...].squeeze(0).data.cpu().numpy()  # for binary
                 inst_score = cam_n[f_h, f_w]
                 inst_pred = [1 if i>0.5 else 0 for i in inst_score]
             

@@ -271,11 +271,13 @@ def summary(model, loader, args):
     patient_results = {}
         
     for batch_idx, (data, label, cors, inst_label) in enumerate(loader):
-        import pdb; pdb.set_trace()
 
         data, label = data.to(device), label.to(device)
         
-        index_label = torch.nonzero(label.squeeze()).to(device)
+        if args.n_classes == 1:  # for binary
+            index_label = torch.nonzero(label.squeeze(0)).to(device)
+        else:
+            index_label = torch.nonzero(label.squeeze()).to(device)
             
         if inst_label!=[]:
             all_inst_label += list(inst_label[0])
@@ -310,7 +312,9 @@ def summary(model, loader, args):
                     cam_raw = visualization.max_norm(cam)
                     cam = visualization.max_norm(cam)
                     cam_rv = visualization.max_norm(cam_rv)
-                Y_hat = torch.argmax(Y_prob)
+                
+                logits_sigmoid = Y_prob.cpu().numpy()
+                Y_hat = torch.from_numpy(np.where(logits_sigmoid>0.5)[0]).cuda().unsqueeze(0)  # for binary
             else:
                 logits, Y_prob, Y_hat, score, _ = model(data)
                 score = score.T
@@ -323,7 +327,8 @@ def summary(model, loader, args):
             if args.model_type in ['nic', 'nicwss']:
                 mask = cors[1]
                 f_h, f_w = np.where(mask==1)
-                cam_n = cam_raw[0,:,...].squeeze(0)
+                # cam_n = cam_raw[0,:,...].squeeze(0)
+                cam_n = cam_raw[0,:,...]  # for binary
                 inst_score = cam_n[:, f_h, f_w].T
                 inst_score, neg_score = instance_analysis(args.n_classes, inst_score, inst_label, inst_probs, inst_preds, 
                                                           inst_binary_labels, pos_accs_each_wsi, neg_accs_each_wsi, 
@@ -335,11 +340,9 @@ def summary(model, loader, args):
 
             all_inst_score.append(inst_score)
             all_inst_score_neg += neg_score
-            import pdb; pdb.set_trace()
             if type(cors[0][0]) is np.ndarray:
                 cors = [["{}_{}_{}.png".format(str(cors[0][i][0]), str(cors[0][i][1]), args.p_size) for i in range(len(cors[0]))]]
                 
-            # import pdb; pdb.set_trace()
             all_silde_ids += [os.path.join(slide_ids[batch_idx], cors[0][i]) for i in range(len(cors[0]))]
 
             
@@ -352,7 +355,7 @@ def summary(model, loader, args):
         all_preds[batch_idx] = Y_hat_one_hot
         patient_results.update({slide_id: {'slide_id': np.array(slide_id), 'prob': probs, 
                                            'label': torch.nonzero(label.squeeze()).squeeze().cpu().numpy()}})
-        error = calculate_error(Y_hat, label)
+        error = calculate_error(Y_hat, label) # for binary
         test_error += error
 
     test_error /= len(loader)
@@ -382,7 +385,6 @@ def summary(model, loader, args):
     df = pd.DataFrame(results_dict)
     if all_inst_score.shape[1]<args.n_classes+1:
         all_inst_score = np.insert(all_inst_score, args.n_classes, values=all_normal_score, axis=1)
-    import pdb; pdb.set_trace()
     inst_results_dict = {'filename':all_silde_ids,'label':all_inst_label}
     # print(len(all_silde_ids),len(all_inst_label),all_inst_score.shape)
     for c in range(args.n_classes+1):

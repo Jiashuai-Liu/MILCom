@@ -144,8 +144,8 @@ def nth(iterator, n, default=None):
         return next(islice(iterator,n, None), default)
 
 def calculate_error(Y_hat, Y):
-    Y = Y.squeeze()
-    Y_hat = Y_hat.squeeze()
+    Y = Y.squeeze(0)
+    Y_hat = Y_hat.squeeze(0)
     Y_hat_hot = torch.zeros(len(Y)).cuda()
     Y_hat_hot[Y_hat]=1
     error = 1. - Y_hat_hot.float().eq(Y.float()).float().mean().item()

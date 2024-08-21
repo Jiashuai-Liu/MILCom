@@ -40,8 +40,12 @@ def cal_neg_acc(neg_label, neg_score, inst_rate):
     
 def instance_analysis(n_classes, score, inst_label, inst_probs, inst_preds, inst_binary_labels, 
                       pos_accs_each_wsi, neg_accs_each_wsi, inst_rate, index_label):
-
-    label_hot = label_binarize(inst_label, classes=[i for i in range(n_classes+1)])
+    # for binary
+    if n_classes == 1:
+        label_mid = label_binarize(inst_label, classes=[i for i in range(n_classes+1)])
+        label_hot = np.column_stack((1-label_mid, label_mid))
+    else:
+        label_hot = label_binarize(inst_label, classes=[i for i in range(n_classes+1)])
     inst_probs_tmp = [] 
     inst_preds_tmp = []
 
@@ -939,7 +943,10 @@ def train_loop_nicwss(epoch, model, loader, optimizer, n_classes, for_cam=False,
         
         label = label.to(device)
         label_bn = label.unsqueeze(2).unsqueeze(3)
-        index_label = torch.nonzero(label.squeeze()).to(device)
+        if n_classes == 1:  # for binary
+            index_label = torch.nonzero(label.squeeze(0)).to(device)
+        else:
+            index_label = torch.nonzero(label.squeeze()).to(device)
         
         # data = data[0]
         data = data.to(device)
@@ -981,11 +988,12 @@ def train_loop_nicwss(epoch, model, loader, optimizer, n_classes, for_cam=False,
             train_er_loss += loss_er.item()
             train_ce_loss += cond_entropy.item()
 
-        Y_hat = torch.argmax(Y_prob)
+        logits_sigmoid = Y_prob.detach().cpu().numpy()
+        Y_hat = torch.from_numpy(np.where(logits_sigmoid>0.5)[0]).cuda().unsqueeze(0)  # for binary
         
         acc_logger.log(Y_hat, index_label)
 
-        error = calculate_error(Y_hat, label)
+        error = calculate_error(Y_hat, label)  # for binary
         train_error += error
         
         loss_value = loss.item()
@@ -1003,7 +1011,7 @@ def train_loop_nicwss(epoch, model, loader, optimizer, n_classes, for_cam=False,
         if inst_label!=[]:  # instance score
             mask = cors[1]
             f_h, f_w = np.where(mask==1)
-            cam_n = cam_raw[0,: ,...].squeeze(0)
+            cam_n = cam_raw[0,:,...] # for binary
             inst_score = cam_n[:, f_h, f_w].T
             inst_score, neg_score = instance_analysis(n_classes, inst_score, inst_label, inst_probs, inst_preds, inst_binary_labels, 
                                             pos_accs_each_wsi, neg_accs_each_wsi, inst_rate, index_label)
@@ -1615,8 +1623,11 @@ def validate_nicwss(cur, epoch, model, loader, n_classes, early_stopping = None,
             
             data, label = data.to(device), label.to(device)
             label_bn = label.unsqueeze(2).unsqueeze(3)
-            index_label = torch.nonzero(label.squeeze()).to(device)
             
+            if n_classes == 1:  # for binary
+                index_label = torch.nonzero(label.squeeze(0)).to(device)
+            else:
+                index_label = torch.nonzero(label.squeeze()).to(device)            
             if for_cam:
                 cam = model(data, masked=True, train=False)
                 label_pred_cam_or = F.adaptive_avg_pool2d(cam, (1, 1))
@@ -1644,12 +1655,13 @@ def validate_nicwss(cur, epoch, model, loader, n_classes, early_stopping = None,
                 loss_cls = loss_cls1 * b_rv + loss_cls2 * (1-b_rv)
                 loss = loss_cls
             
-            Y_hat = torch.argmax(Y_prob)
+            logits_sigmoid = Y_prob.detach().cpu().numpy()
+            Y_hat = torch.from_numpy(np.where(logits_sigmoid>0.5)[0]).cuda().unsqueeze(0)  # for binary
             
 
             acc_logger.log(Y_hat, index_label) 
 
-            error = calculate_error(Y_hat, label)
+            error = calculate_error(Y_hat, label)  # for binary
 
             val_error += error
 
@@ -1663,7 +1675,8 @@ def validate_nicwss(cur, epoch, model, loader, n_classes, early_stopping = None,
             if inst_label!=[]:
                 mask = cors[1]
                 f_h, f_w = np.where(mask==1)
-                cam_n = cam_raw[0,:,...].squeeze(0)
+                # cam_n = cam_raw[0,:,...].squeeze(0)
+                cam_n = cam_raw[0,:,...]
                 inst_score = cam_n[:, f_h, f_w].T
                 inst_score, neg_score = instance_analysis(n_classes, inst_score, inst_label, inst_probs, inst_preds, 
                                                         inst_binary_labels, pos_accs_each_wsi, neg_accs_each_wsi, 
@@ -1685,16 +1698,14 @@ def validate_nicwss(cur, epoch, model, loader, n_classes, early_stopping = None,
                                                         pos_accs_each_wsi, neg_accs_each_wsi, inst_rate)
 
 
-    if task == 'camelyon':
-        auc = roc_auc_score(all_labels, all_probs[:, 1])
-    else:
-        aucs = []
-        binary_labels = all_labels
-        for class_idx in range(n_classes):
-            fpr, tpr, _ = roc_curve(binary_labels[:, class_idx], all_probs[:, class_idx])
-            aucs.append(calc_auc(fpr, tpr))
+    # for binary
+    aucs = []
+    binary_labels = all_labels
+    for class_idx in range(n_classes):
+        fpr, tpr, _ = roc_curve(binary_labels[:, class_idx], all_probs[:, class_idx])
+        aucs.append(calc_auc(fpr, tpr))
 
-        auc = np.nanmean(np.array(aucs))
+    auc = np.nanmean(np.array(aucs))
 
     if writer:
         writer.add_scalar('val/loss', val_loss, epoch)
@@ -1755,7 +1766,10 @@ def summary(model, loader, args):
 
         data, label = data.to(device), label.to(device)
         
-        index_label = torch.nonzero(label.squeeze()).to(device)
+        if args.n_classes == 1:  # for binary
+            index_label = torch.nonzero(label.squeeze(0)).to(device)
+        else:
+            index_label = torch.nonzero(label.squeeze()).to(device)
         
         slide_id = slide_ids.iloc[batch_idx]
         
@@ -1788,8 +1802,9 @@ def summary(model, loader, args):
                     cam_raw = visualization.max_norm(cam)
                     cam = visualization.max_norm(cam)
                     cam_rv = visualization.max_norm(cam_rv)
-                    
-                Y_hat = torch.argmax(Y_prob)
+                logits_sigmoid = Y_prob.cpu().numpy()
+                Y_hat = torch.from_numpy(np.where(logits_sigmoid>0.5)[0]).cuda().unsqueeze(0)  # for binary
+                
             else:
                 logits, Y_prob, Y_hat, score, _ = model(data)
 
@@ -1799,7 +1814,8 @@ def summary(model, loader, args):
             if args.model_type in ['nic', 'nicwss']:
                 mask = cors[1]
                 f_h, f_w = np.where(mask==1)
-                cam_n = cam_raw[0,:,...].squeeze(0)
+                # cam_n = cam_raw[0,:,...].squeeze()
+                cam_n = cam_raw[0,:,...]  # for binary
                 inst_score = cam_n[:, f_h, f_w].T
                 inst_score, neg_score = instance_analysis(args.n_classes, inst_score, inst_label, inst_probs, inst_preds, 
                                                           inst_binary_labels, pos_accs_each_wsi, neg_accs_each_wsi, 
@@ -1813,7 +1829,6 @@ def summary(model, loader, args):
             all_inst_score.append(inst_score)
             all_inst_score_neg += neg_score
 
-            
         acc_logger.log(Y_hat, index_label)
         probs = Y_prob.cpu().numpy()
         all_probs[batch_idx] = probs
@@ -1821,7 +1836,7 @@ def summary(model, loader, args):
         
         patient_results.update({slide_id: {'slide_id': np.array(slide_id), 'prob': probs, 
                                            'label': torch.nonzero(label.squeeze()).squeeze().cpu().numpy()}})
-        error = calculate_error(Y_hat, label)
+        error = calculate_error(Y_hat, label)  # for binary
         test_error += error
 
     test_error /= len(loader)

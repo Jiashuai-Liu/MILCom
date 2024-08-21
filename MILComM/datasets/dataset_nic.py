@@ -338,7 +338,9 @@ class Generic_MIL_Dataset(Generic_WSI_Classification_Dataset):
         elif task == 'gleason_subtyping':
             label_dict = [[0,0,0], [0,0,1], [0,1,0], [0,1,1], [1,0,0], [1,1,0], [1,1,1]] # gleason, delete '1,0,1':5,
         elif task == 'crc_subtyping':
-            label_dict =  [[1, 1, 1, 0, 0], [1, 1, 0, 1, 0], [1, 1, 0, 0, 1], [1, 0, 1, 1, 0], [1, 0, 1, 0, 1], [1, 0, 0, 1, 1], [0, 1, 1, 1, 0], [0, 1, 1, 0, 1], [0, 1, 0, 1, 1], [0, 0, 1, 1, 1]] # crc
+            label_dict = [[1, 1, 1, 0, 0], [1, 1, 0, 1, 0], [1, 1, 0, 0, 1], [1, 0, 1, 1, 0], [1, 0, 1, 0, 1], [1, 0, 0, 1, 1], [0, 1, 1, 1, 0], [0, 1, 1, 0, 1], [0, 1, 0, 1, 1], [0, 0, 1, 1, 1]] # crc
+        elif task == 'camelyon':  # for binary
+            label_dict = [[0], [1]]
         else:
             raise NotImplementedError
             

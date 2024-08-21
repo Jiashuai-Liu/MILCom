@@ -278,8 +278,6 @@ elif args.task == 'kica_staging':
     else:
         dataset = Generic_MIL_Dataset(**dataset_params)
     
-
-
 # other feature
 elif args.task == 'renal_subtype_yfy':
     args.n_classes=3
@@ -296,16 +294,15 @@ elif args.task == 'renal_subtype_yfy':
     if args.model_type in ['clam_sb', 'clam_mb']:
         assert args.subtyping 
 elif args.task == 'camelyon':
-    args.n_classes=2
-    dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/camelyon_npy.csv',
-                                data_dir = args.data_root_dir,
-                                data_mag = '0_512',
-                                shuffle = False, 
-                                seed = 10, 
-                                print_info = True,
-                                label_dict = {'normal':0, 'tumor':1},
-                                patient_strat= False,
-                                ignore=[])
+    args.n_classes=1
+    dataset_params['csv_path'] = 'dataset_csv/camelyon_npy.csv'
+    dataset_params['label_dict'] = {'normal':0, 'tumor':1}
+    dataset_params['data_mag'] = '0_512'
+    if args.model_type in ['nicwss', 'nic']:
+        dataset = NIC_MIL_Dataset(**dataset_params)
+    else:
+        dataset = Generic_MIL_Dataset(**dataset_params)
+        
 elif args.task == 'lung_subtype':
     args.n_classes=2
     dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/lung_subtyping_npy.csv',

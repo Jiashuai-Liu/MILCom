@@ -257,6 +257,16 @@ if args.task == 'gastric_subtyping':
     if args.model_type in ['clam_sb', 'clam_mb']:
         assert args.subtyping
 
+elif args.task == 'camelyon':  # for binary
+    args.n_classes=1
+    dataset_params['csv_path'] = 'dataset_csv/camelyon_npy.csv'
+    dataset_params['label_dict'] = {'normal':0, 'tumor':1}
+    dataset_params['data_mag'] = '0_512'
+    if args.model_type in ['nicwss', 'nic']:
+        dataset = NIC_MIL_Dataset(**dataset_params)
+    else:
+        dataset = Generic_MIL_Dataset(**dataset_params)
+
 elif args.task == 'gleason_subtyping':
     args.n_classes = 3
     dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/gleason_subtyping_npy.csv',
